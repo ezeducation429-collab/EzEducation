@@ -1,0 +1,1 @@
+ALTER TABLE `notes` ADD `course` text DEFAULT 'bpharm' NOT NULL;

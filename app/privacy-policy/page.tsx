@@ -1,0 +1,16 @@
+import type {Metadata} from 'next';
+import LegalPage from '../legal-page';
+
+export const metadata:Metadata={alternates:{canonical:'/privacy-policy'},title:'Privacy Policy | Ez Education',description:'Privacy policy for visitors to ezeducation.in.'};
+
+export default function PrivacyPolicyPage(){return <LegalPage eyebrow="PRIVACY POLICY" title="Your privacy matters." intro="This policy explains the information that may be processed when you visit ezeducation.in and how advertising services may use data if they are enabled." sections={[
+  {title:'Information processed',content:<><p>You can browse public study material without creating a visitor account. Our hosting and security providers may automatically process technical information such as browser type, device information, requested pages, approximate location based on IP address and diagnostic logs.</p></>},
+  {title:'How information is used',content:<p>Technical information may be used to deliver the website, protect it from misuse, diagnose errors, understand general usage and improve the learning experience.</p>},
+  {title:'Payments and purchased downloads',content:<p>Razorpay handles checkout information under its own privacy policy. Ez Education stores the order ID, payment ID, purchased material, amount and payment status to verify payments and deliver downloads. New orders are linked to your Firebase student account. Firebase processes your email and password for authentication; Ez Education does not store your password. An HTTP-only session cookie keeps you signed in for up to one hour. Older guest purchases remain linked to their browser cookie unless you choose to link them to your account at sign-in. Ez Education does not store your card details, UPI PIN or banking password.</p>},
+  {title:'Cookies and advertising',content:<p>If Google AdSense or another advertising service is enabled, Google and its partners may use cookies or similar technologies to serve, measure and personalise ads where permitted. Visitors can manage advertising preferences through Google&apos;s ad settings and their browser controls.</p>},
+  {title:'Third-party services and links',content:<p>The website may link to downloadable files or third-party services. Their own privacy policies apply when you leave Ez Education or interact with those services.</p>},
+  {title:'Data retention and security',content:<p>Technical records are retained only as needed for operation, security, legal compliance and troubleshooting. Reasonable safeguards are used, but no internet service can guarantee absolute security.</p>},
+  {title:'Children and student users',content:<p>The website provides general educational material and does not knowingly request sensitive personal information from children. A parent or guardian should supervise younger users online.</p>},
+  {title:'Your choices and requests',content:<p>You may block or delete cookies using your browser and manage Google advertising preferences through Google&apos;s controls. For a privacy question or request, use the method listed on the Contact page.</p>},
+  {title:'Policy updates',content:<p>This policy may be updated when the website, applicable requirements or service providers change. The latest version and update date will remain available on this page.</p>}
+]}/>}

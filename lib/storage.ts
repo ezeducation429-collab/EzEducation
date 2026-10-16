@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { neon } from '@neondatabase/serverless';
 
 export interface D1PreparedStatement {
   bind(...values: any[]): D1PreparedStatement;
@@ -26,7 +27,102 @@ export function adminSecret(): string {
 }
 
 // ---------------------------------------------------------------------------
-// Cloudflare D1 REST API Client (for Vercel / serverless deployments)
+// Neon PostgreSQL Client (Production & Development with pooling)
+// ---------------------------------------------------------------------------
+class NeonPreparedStatement implements D1PreparedStatement {
+  constructor(
+    private sqlClient: any,
+    private rawSql: string,
+    private params: any[] = []
+  ) {}
+
+  bind(...values: any[]): D1PreparedStatement {
+    return new NeonPreparedStatement(this.sqlClient, this.rawSql, values);
+  }
+
+  private transform(sql: string): string {
+    let index = 1;
+    // Translate SQLite parameter ? to PostgreSQL $1, $2, ...
+    let pgSql = sql.replace(/\?/g, () => `$${index++}`);
+    // Translate SQLite json_array_length(col) to PostgreSQL json_array_length(col::json)
+    pgSql = pgSql.replace(/json_array_length\(([^)]+)\)/gi, 'json_array_length($1::json)');
+    return pgSql;
+  }
+
+  async all<T = any>(): Promise<{ results: T[]; success: boolean; meta?: any }> {
+    try {
+      const pgSql = this.transform(this.rawSql);
+      const res = await this.sqlClient.query(pgSql, this.params, { fullResults: true });
+      return {
+        results: (res.rows || []) as T[],
+        success: true,
+        meta: { changes: res.rowCount ?? 0 },
+      };
+    } catch (err: any) {
+      console.error('Neon all() error:', err?.message, 'SQL:', this.rawSql);
+      throw err;
+    }
+  }
+
+  async first<T = any>(colName?: string): Promise<T | null> {
+    const { results } = await this.all<T>();
+    if (!results || results.length === 0) return null;
+    const row = results[0] as any;
+    if (colName) return row[colName] ?? null;
+    return row as T;
+  }
+
+  async run(): Promise<{ success: boolean; meta: { changes: number; last_row_id?: number } }> {
+    try {
+      const pgSql = this.transform(this.rawSql);
+      const res = await this.sqlClient.query(pgSql, this.params, { fullResults: true });
+      return {
+        success: true,
+        meta: { changes: res.rowCount ?? 0 },
+      };
+    } catch (err: any) {
+      console.error('Neon run() error:', err?.message, 'SQL:', this.rawSql);
+      throw err;
+    }
+  }
+}
+
+class NeonDatabaseClient implements D1Database {
+  private client: any;
+
+  constructor(connectionString: string) {
+    this.client = neon(connectionString);
+  }
+
+  prepare(query: string): D1PreparedStatement {
+    return new NeonPreparedStatement(this.client, query);
+  }
+
+  async batch(statements: D1PreparedStatement[]): Promise<any[]> {
+    const results = [];
+    for (const stmt of statements) {
+      results.push(await stmt.run());
+    }
+    return results;
+  }
+
+  async exec(query: string): Promise<any> {
+    return this.client(query);
+  }
+}
+
+let cachedNeonDb: D1Database | null = null;
+
+function getNeonDatabase(): D1Database {
+  if (cachedNeonDb) return cachedNeonDb;
+  const url = process.env.DATABASE_URL;
+  if (!url) throw new Error('DATABASE_URL is not set.');
+  cachedNeonDb = new NeonDatabaseClient(url);
+  return cachedNeonDb;
+}
+
+// ---------------------------------------------------------------------------
+// Cloudflare D1 REST API Client (legacy fallback)
 // ---------------------------------------------------------------------------
 class D1HttpClient implements D1Database {
   constructor(
@@ -111,7 +207,7 @@ class D1HttpPreparedStatement implements D1PreparedStatement {
 }
 
 // ---------------------------------------------------------------------------
-// Node.js SQLite Client (local development / self-hosted Node)
+// Node.js SQLite Client (local development fallback)
 // ---------------------------------------------------------------------------
 let cachedLocalDb: any = null;
 
@@ -122,20 +218,10 @@ function getLocalSqliteDatabase(): D1Database {
     throw new Error('SQLite is unavailable in this environment.');
   }
 
-  // Find sqlite database file
   const candidatePaths = [
     process.env.SQLITE_PATH,
     path.join(process.cwd(), 'data.sqlite'),
   ];
-
-  // Also search .wrangler/state directory if present
-  const wranglerD1Dir = path.join(process.cwd(), '.wrangler', 'state', 'v3', 'd1', 'miniflare-D1DatabaseObject');
-  if (fs.existsSync(wranglerD1Dir)) {
-    const files = fs.readdirSync(wranglerD1Dir).filter((f) => f.endsWith('.sqlite') && f !== 'metadata.sqlite');
-    if (files.length > 0) {
-      candidatePaths.unshift(path.join(wranglerD1Dir, files[0]));
-    }
-  }
 
   let dbPath = candidatePaths.find((p) => p && fs.existsSync(p));
   if (!dbPath) {
@@ -213,7 +299,7 @@ function getLocalSqliteDatabase(): D1Database {
 }
 
 // ---------------------------------------------------------------------------
-// Local / Fallback Bucket Implementation
+// Local Storage Bucket Implementation
 // ---------------------------------------------------------------------------
 class LocalBucket implements StorageBucket {
   private baseDir: string;
@@ -271,11 +357,16 @@ class LocalBucket implements StorageBucket {
 // Main Exports: database() & bucket()
 // ---------------------------------------------------------------------------
 export function database(): D1Database {
-  // 1. Check if running inside Cloudflare Workers runtime
+  // 1. Neon PostgreSQL (Primary for production & local development)
+  if (process.env.DATABASE_URL) {
+    return getNeonDatabase();
+  }
+
+  // 2. Cloudflare Workers runtime binding
   const globalDb = (globalThis as any).DB || (globalThis as any).__env__?.DB;
   if (globalDb) return globalDb;
 
-  // 2. Check if Cloudflare D1 REST API credentials are provided (e.g. on Vercel)
+  // 3. Cloudflare D1 REST API credentials
   const d1Id = process.env.CLOUDFLARE_D1_DATABASE_ID;
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
   const apiToken = process.env.CLOUDFLARE_API_TOKEN;
@@ -283,7 +374,7 @@ export function database(): D1Database {
     return new D1HttpClient(accountId, d1Id, apiToken);
   }
 
-  // 3. Fallback to local SQLite database (built-in Node.js 22 SQLite)
+  // 4. Fallback to local SQLite database
   return getLocalSqliteDatabase();
 }
 

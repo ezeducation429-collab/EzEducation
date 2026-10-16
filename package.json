@@ -10,11 +10,16 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint app components lib",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "node --env-file=.env.local scripts/migrate.mjs",
+    "test": "npx tsx --env-file=.env.local --test scripts/app.test.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
     "@hookform/resolvers": "^5.7.1",
+    "@neon/config": "^1.9.2",
+    "@neon/env": "^1.6.3",
+    "@neondatabase/serverless": "^1.2.0",
     "@shadcn/react": "^0.3.0",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",

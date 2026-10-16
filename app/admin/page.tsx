@@ -1,3 +1,9 @@
 import AdminPanel from './panel';
-export const dynamic='force-dynamic';
-export default function Admin(){return <AdminPanel/>}
+import { isAdmin } from '@/lib/admin';
+
+export const dynamic = 'force-dynamic';
+
+export default async function Admin() {
+  const authenticated = await isAdmin();
+  return <AdminPanel initialAuth={authenticated} />;
+}

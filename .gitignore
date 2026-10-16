@@ -50,3 +50,5 @@ data.sqlite*
 
 *.tsbuildinfo
 !.env.example
+.neon
+/drizzle_sqlite_backup/

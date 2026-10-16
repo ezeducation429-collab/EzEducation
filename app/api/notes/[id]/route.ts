@@ -1,39 +1,108 @@
-import {database, bucket} from '@/lib/storage';
-import {isAdmin, sameOrigin} from '@/lib/admin';
-import {pricePaise,paymentFailure,PaymentError} from '@/lib/payments';
+import { database, bucket } from '@/lib/storage';
+import { isAdmin, sameOrigin } from '@/lib/admin';
+import { paymentFailure, PaymentError } from '@/lib/payments';
+import {
+  ValidationError,
+  validateUUID,
+  validateString,
+  validatePriceInput,
+} from '@/lib/validation';
 
-export async function PATCH(req:Request,{params}:{params:Promise<{id:string}>}){
-  try{
-    if(!sameOrigin(req)||!await isAdmin())return Response.json({error:'Educator access required.'},{status:403});
-    const {id}=await params;const data=await req.json() as Record<string,unknown>;
-    const subject=String(data.subject||'').trim(),unit=String(data.unit||'').trim();
-    if(!subject||subject.length>160||unit.length>80)throw new PaymentError('Enter a subject and a unit of up to 80 characters.');
-    const price=pricePaise(String(data.price??''));
-    const note=await database().prepare('SELECT file_key FROM notes WHERE id=?').bind(id).first<{file_key:string|null}>();
-    if(!note)throw new PaymentError('Material not found.',404);
-    if(price>0&&!note.file_key)throw new PaymentError('Upload a PDF to sell it. Public links must remain free.');
-    await database().prepare('UPDATE notes SET subject=?,unit=?,price_paise=? WHERE id=?').bind(subject,unit,price,id).run();
-    return Response.json({updated:true});
-  }catch(e){return paymentFailure(e)}
+export async function PATCH(
+  req: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    if (!sameOrigin(req) || !(await isAdmin())) {
+      return Response.json({ error: 'Educator access required.' }, { status: 403 });
+    }
+
+    const { id } = await params;
+    const noteId = validateUUID(id, 'material ID');
+
+    const data = (await req.json()) as Record<string, unknown>;
+    const subject = validateString(data.subject, 'Subject name', 2, 160);
+
+    const rawUnit = data.unit !== undefined && data.unit !== null ? String(data.unit).trim() : '';
+    const unit = rawUnit ? validateString(rawUnit, 'Unit / Chapter', 1, 80) : '';
+
+    const price = validatePriceInput(data.price);
+
+    const note = await database()
+      .prepare('SELECT file_key FROM notes WHERE id=?')
+      .bind(noteId)
+      .first<{ file_key: string | null }>();
+
+    if (!note) {
+      return Response.json({ error: 'Study material not found.' }, { status: 404 });
+    }
+
+    if (price > 0 && !note.file_key) {
+      throw new ValidationError(
+        'Upload a PDF file to charge for it. Public external links must remain free.',
+        400,
+        'price'
+      );
+    }
+
+    await database()
+      .prepare('UPDATE notes SET subject=?,unit=?,price_paise=? WHERE id=?')
+      .bind(subject, unit, price, noteId)
+      .run();
+
+    return Response.json({ updated: true });
+  } catch (e) {
+    if (e instanceof ValidationError) {
+      return Response.json({ error: e.message, field: e.field }, { status: e.status });
+    }
+    if (e instanceof PaymentError) {
+      return paymentFailure(e);
+    }
+    console.error('Update note error:', e);
+    return Response.json({ error: 'Could not update study material.' }, { status: 500 });
+  }
 }
 
-export async function DELETE(req: Request, {params}: {params: Promise<{id: string}>}) {
+export async function DELETE(
+  req: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
   try {
-    if (!sameOrigin(req) || !await isAdmin()) {
-      return Response.json({error: 'Educator access required. Please unlock the panel again.'}, {status: 403});
+    if (!sameOrigin(req) || !(await isAdmin())) {
+      return Response.json(
+        { error: 'Educator access required. Please unlock the panel again.' },
+        { status: 403 }
+      );
     }
-    const {id} = await params;
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
-      return Response.json({error: 'Invalid material ID.'}, {status: 400});
+
+    const { id } = await params;
+    const noteId = validateUUID(id, 'material ID');
+
+    const note = await database()
+      .prepare('SELECT file_key FROM notes WHERE id=?')
+      .bind(noteId)
+      .first<{ file_key: string | null }>();
+
+    if (!note) return new Response(null, { status: 204 });
+
+    if (note.file_key) {
+      try {
+        await bucket().delete(note.file_key);
+      } catch (err) {
+        console.error('Failed to delete S3/R2 file for note:', err);
+      }
     }
-    // Keep the file key available on retries, including after a storage failure.
-    const note = await database().prepare('SELECT file_key FROM notes WHERE id=?').bind(id).first<{file_key: string | null}>();
-    if (!note) return new Response(null, {status: 204});
-    if (note.file_key) await bucket().delete(note.file_key);
-    await database().prepare('DELETE FROM notes WHERE id=?').bind(id).run();
-    return new Response(null, {status: 204});
+
+    await database().prepare('DELETE FROM notes WHERE id=?').bind(noteId).run();
+    return new Response(null, { status: 204 });
   } catch (error) {
-    console.error('Delete note', error);
-    return Response.json({error: 'Deletion could not be completed. Please try again.'}, {status: 503});
+    if (error instanceof ValidationError) {
+      return Response.json({ error: error.message }, { status: error.status });
+    }
+    console.error('Delete note error:', error);
+    return Response.json(
+      { error: 'Deletion could not be completed. Please try again.' },
+      { status: 503 }
+    );
   }
 }

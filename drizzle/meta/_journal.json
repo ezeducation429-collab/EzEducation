@@ -1,47 +1,12 @@
 {
   "version": "7",
-  "dialect": "sqlite",
+  "dialect": "postgresql",
   "entries": [
     {
       "idx": 0,
-      "version": "6",
-      "when": 1790003272640,
-      "tag": "0000_cloudy_dexter_bennett",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "6",
-      "when": 1790005439192,
-      "tag": "0001_pretty_paladin",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "6",
-      "when": 1791100560482,
-      "tag": "0002_robust_demogoblin",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "6",
-      "when": 1791100994793,
-      "tag": "0003_stale_lethal_legion",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "6",
-      "when": 1791101857850,
-      "tag": "0004_sweet_starfox",
-      "breakpoints": true
-    },
-    {
-      "idx": 5,
-      "version": "6",
-      "when": 1791371868374,
-      "tag": "0005_melodic_tomas",
+      "version": "7",
+      "when": 1792136364923,
+      "tag": "0000_fair_siren",
       "breakpoints": true
     }
   ]

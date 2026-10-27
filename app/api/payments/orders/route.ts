@@ -60,7 +60,8 @@ export async function POST(req: Request) {
     }
 
     const config = await requireConfig();
-    if (config.keyId.startsWith('rzp_test_') && !(await isAdmin())) {
+    const isLocalhost = req.headers.get('host')?.includes('localhost') || req.headers.get('host')?.includes('127.0.0.1');
+    if (config.keyId.startsWith('rzp_test_') && !isLocalhost && !(await isAdmin())) {
       throw new PaymentError(
         'Payments are currently running in test mode. Please contact Ez Education to purchase.',
         503

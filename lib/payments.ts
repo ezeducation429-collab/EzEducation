@@ -1,22 +1,232 @@
-import {studentUser,studentBuyerHash} from './firebase-auth';
-import {cookies} from 'next/headers';
-import {adminSecret,database} from './storage';
+import { studentUser, studentBuyerHash } from './firebase-auth';
+import { cookies } from 'next/headers';
+import { adminSecret, database } from './storage';
 
-export type RazorpayConfig={keyId:string;keySecret:string};
-export type Order={id:string;note_id:string;buyer_hash:string;amount:number;key_id:string;payment_id:string|null;status:string;created_at:string};
-export class PaymentError extends Error {constructor(message:string,public status=400){super(message)}}
-const encoder=new TextEncoder();
-export function equalHex(a:string,b:string){if(!/^[a-f0-9]{64}$/i.test(b))return false;let different=a.length^b.length;for(let i=0;i<a.length;i++)different|=a.charCodeAt(i)^b.charCodeAt(i);return different===0}
-export async function hmac(secret:string,value:string){const key=await crypto.subtle.importKey('raw',encoder.encode(secret),{name:'HMAC',hash:'SHA-256'},false,['sign']);return Array.from(new Uint8Array(await crypto.subtle.sign('HMAC',key,encoder.encode(value)))).map(x=>x.toString(16).padStart(2,'0')).join('')}
-async function encryptionKey(){if(!adminSecret())throw new PaymentError('Payment settings are unavailable.',503);return crypto.subtle.importKey('raw',await crypto.subtle.digest('SHA-256',encoder.encode('ez-razorpay:'+adminSecret())),{name:'AES-GCM'},false,['encrypt','decrypt'])}
-export async function encryptConfig(config:RazorpayConfig){const iv=crypto.getRandomValues(new Uint8Array(12));const data=new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv},await encryptionKey(),encoder.encode(JSON.stringify(config))));return JSON.stringify({iv:Array.from(iv),data:Array.from(data)})}
-export async function paymentConfig():Promise<RazorpayConfig|null>{const keyId=process.env.RAZORPAY_KEY_ID;const keySecret=process.env.RAZORPAY_KEY_SECRET;if(keyId&&keySecret)return {keyId,keySecret};const row=await database().prepare('SELECT encrypted_credentials FROM payment_settings WHERE id=?').bind('razorpay').first<{encrypted_credentials:string}>();if(!row)return null;const {iv,data}=JSON.parse(row.encrypted_credentials);const plain=await crypto.subtle.decrypt({name:'AES-GCM',iv:new Uint8Array(iv)},await encryptionKey(),new Uint8Array(data));return JSON.parse(new TextDecoder().decode(plain))}
-export async function requireConfig(){const config=await paymentConfig();if(!config)throw new PaymentError('Payments are not available yet. Please contact Ez Education.',503);return config}
-export async function razorpay(config:RazorpayConfig,path:string,body?:unknown){const response=await fetch('https://api.razorpay.com/v1/'+path,{method:body?'POST':'GET',headers:{Authorization:'Basic '+btoa(config.keyId+':'+config.keySecret),'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(15000)});if(!response.ok)throw new PaymentError('Razorpay could not complete the request. Please try again.',502);return response.json() as Promise<Record<string,unknown>>}
-export async function legacyBuyerHash(create=false){const store=await cookies();let token=store.get('ez_notes_buyer')?.value;if(!token||!/^[a-f0-9]{64}$/.test(token)){if(!create)return null;token=Array.from(crypto.getRandomValues(new Uint8Array(32))).map(x=>x.toString(16).padStart(2,'0')).join('');store.set('ez_notes_buyer',token,{httpOnly:true,secure:true,sameSite:'lax',path:'/',maxAge:365*24*60*60})}return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',encoder.encode(token)))).map(x=>x.toString(16).padStart(2,'0')).join('')}
-export function pricePaise(input:string){if(!/^\d{1,5}(\.\d{1,2})?$/.test(input))throw new PaymentError('Enter a price from ₹0 to ₹99,999.99, with up to 2 decimal places.');const [whole,fraction='']=input.split('.');const value=Number(whole)*100+Number(fraction.padEnd(2,'0'));if(value>0&&value<100)throw new PaymentError('Paid PDFs must cost at least ₹1. Use 0 for a free PDF.');return value}
-export function paymentFailure(error:unknown){if(error instanceof PaymentError)return Response.json({error:error.message},{status:error.status,headers:{'Cache-Control':'no-store'}});console.error('Payment request failed',error instanceof Error?error.name:'Unknown error');return Response.json({error:'Payments are temporarily unavailable. Please try again.'},{status:503})}
-export async function verifyCaptured(config:RazorpayConfig,order:Order,paymentId:string){const payment=await razorpay(config,'payments/'+encodeURIComponent(paymentId));if(payment.order_id!==order.id||payment.amount!==order.amount||payment.currency!=='INR')throw new PaymentError('Payment details do not match this order.',403);if(payment.status!=='captured'||Number(payment.amount_refunded||0)>0)throw new PaymentError('Payment is not yet captured or has been refunded. If money was deducted, wait and try Verify payment again.',409);return payment}
-export async function paidAccess(noteId:string){const buyer=await buyerHash();if(!buyer)return false;const paid=await database().prepare("SELECT id FROM note_orders WHERE buyer_hash=? AND note_id=? AND status='paid' LIMIT 1").bind(buyer,noteId).first<{id:string}>();if(paid)return true;const unverified=await database().prepare("SELECT * FROM note_orders WHERE buyer_hash=? AND note_id=? AND payment_id IS NOT NULL ORDER BY created_at DESC LIMIT 1").bind(buyer,noteId).first<Order>();if(unverified&&unverified.payment_id){try{await verifyCaptured(await requireConfig(),unverified,unverified.payment_id);await database().prepare("UPDATE note_orders SET status='paid' WHERE id=?").bind(unverified.id).run();return true}catch(e){if(e instanceof PaymentError&&e.status===409)return false;throw e}}return false}
+export type RazorpayConfig = { keyId: string; keySecret: string };
+export type Order = {
+  id: string;
+  note_id: string;
+  buyer_hash: string;
+  amount: number;
+  key_id: string;
+  payment_id: string | null;
+  status: string;
+  created_at: string;
+};
 
-export async function buyerHash(create=false){const user=await studentUser();if(user)return studentBuyerHash(user.uid);if(create)throw new PaymentError("Please sign in to your student account before buying notes.",401);return legacyBuyerHash()}
+export class PaymentError extends Error {
+  constructor(message: string, public status = 400) {
+    super(message);
+  }
+}
+
+const encoder = new TextEncoder();
+
+export function equalHex(a: string, b: string) {
+  if (!/^[a-f0-9]{64}$/i.test(b)) return false;
+  let different = a.length ^ b.length;
+  for (let i = 0; i < a.length; i++) different |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return different === 0;
+}
+
+export async function hmac(secret: string, value: string) {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  return Array.from(new Uint8Array(await crypto.subtle.sign('HMAC', key, encoder.encode(value))))
+    .map((x) => x.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+async function encryptionKey() {
+  if (!adminSecret()) throw new PaymentError('Payment settings are unavailable.', 503);
+  return crypto.subtle.importKey(
+    'raw',
+    await crypto.subtle.digest('SHA-256', encoder.encode('ez-razorpay:' + adminSecret())),
+    { name: 'AES-GCM' },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+
+export async function encryptConfig(config: RazorpayConfig) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const data = new Uint8Array(
+    await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv },
+      await encryptionKey(),
+      encoder.encode(JSON.stringify(config))
+    )
+  );
+  return JSON.stringify({ iv: Array.from(iv), data: Array.from(data) });
+}
+
+export async function paymentConfig(): Promise<RazorpayConfig | null> {
+  // 1. Check database first (dynamic educator portal setting)
+  try {
+    const row = await database()
+      .prepare('SELECT encrypted_credentials FROM payment_settings WHERE id=?')
+      .bind('razorpay')
+      .first<{ encrypted_credentials: string }>();
+
+    if (row?.encrypted_credentials) {
+      const { iv, data } = JSON.parse(row.encrypted_credentials);
+      const plain = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: new Uint8Array(iv) },
+        await encryptionKey(),
+        new Uint8Array(data)
+      );
+      const decrypted = JSON.parse(new TextDecoder().decode(plain));
+      if (decrypted?.keyId && decrypted?.keySecret) {
+        return {
+          keyId: String(decrypted.keyId).trim(),
+          keySecret: String(decrypted.keySecret).trim(),
+        };
+      }
+    }
+  } catch (e) {
+    console.warn('Could not read database payment_settings, falling back to env', e);
+  }
+
+  // 2. Fallback to environment variables
+  const keyId = process.env.RAZORPAY_KEY_ID?.trim();
+  const keySecret = process.env.RAZORPAY_KEY_SECRET?.trim();
+  if (keyId && keySecret) return { keyId, keySecret };
+
+  return null;
+}
+
+export async function requireConfig() {
+  const config = await paymentConfig();
+  if (!config) throw new PaymentError('Payments are not available yet. Please contact Ez Education.', 503);
+  return config;
+}
+
+export async function razorpay(config: RazorpayConfig, path: string, body?: unknown) {
+  const response = await fetch('https://api.razorpay.com/v1/' + path, {
+    method: body ? 'POST' : 'GET',
+    headers: {
+      Authorization: 'Basic ' + Buffer.from(config.keyId.trim() + ':' + config.keySecret.trim()).toString('base64'),
+      'Content-Type': 'application/json',
+    },
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(15000),
+  });
+
+  if (!response.ok) {
+    const errorData = (await response.json().catch(() => null)) as {
+      error?: { description?: string; code?: string; reason?: string };
+    } | null;
+    const desc = errorData?.error?.description || errorData?.error?.reason;
+    if (response.status === 401 || desc?.toLowerCase().includes('auth')) {
+      throw new PaymentError('Razorpay authentication failed: Invalid Key ID or Key Secret in settings.', 502);
+    }
+    throw new PaymentError(desc || 'Razorpay could not complete the request. Please try again.', 502);
+  }
+
+  return response.json() as Promise<Record<string, unknown>>;
+}
+
+export async function legacyBuyerHash(create = false) {
+  const store = await cookies();
+  let token = store.get('ez_notes_buyer')?.value;
+  if (!token || !/^[a-f0-9]{64}$/.test(token)) {
+    if (!create) return null;
+    token = Array.from(crypto.getRandomValues(new Uint8Array(32)))
+      .map((x) => x.toString(16).padStart(2, '0'))
+      .join('');
+    store.set('ez_notes_buyer', token, {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 365 * 24 * 60 * 60,
+    });
+  }
+  return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(token))))
+    .map((x) => x.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+export function pricePaise(input: string) {
+  if (!/^\d{1,5}(\.\d{1,2})?$/.test(input)) {
+    throw new PaymentError('Enter a price from ₹0 to ₹99,999.99, with up to 2 decimal places.');
+  }
+  const [whole, fraction = ''] = input.split('.');
+  const value = Number(whole) * 100 + Number(fraction.padEnd(2, '0'));
+  if (value > 0 && value < 100) {
+    throw new PaymentError('Paid PDFs must cost at least ₹1. Use 0 for a free PDF.');
+  }
+  return value;
+}
+
+export function paymentFailure(error: unknown) {
+  if (error instanceof PaymentError) {
+    return Response.json(
+      { error: error.message },
+      { status: error.status, headers: { 'Cache-Control': 'no-store' } }
+    );
+  }
+  console.error('Payment request failed', error instanceof Error ? error.message : error);
+  return Response.json(
+    { error: 'Payments are temporarily unavailable. Please try again.' },
+    { status: 503 }
+  );
+}
+
+export async function verifyCaptured(config: RazorpayConfig, order: Order, paymentId: string) {
+  const payment = await razorpay(config, 'payments/' + encodeURIComponent(paymentId));
+  if (payment.order_id !== order.id || payment.amount !== order.amount || payment.currency !== 'INR') {
+    throw new PaymentError('Payment details do not match this order.', 403);
+  }
+  if (payment.status !== 'captured' || Number(payment.amount_refunded || 0) > 0) {
+    throw new PaymentError(
+      'Payment is not yet captured or has been refunded. If money was deducted, wait and try Verify payment again.',
+      409
+    );
+  }
+  return payment;
+}
+
+export async function paidAccess(noteId: string) {
+  const buyer = await buyerHash();
+  if (!buyer) return false;
+  const paid = await database()
+    .prepare("SELECT id FROM note_orders WHERE buyer_hash=? AND note_id=? AND status='paid' LIMIT 1")
+    .bind(buyer, noteId)
+    .first<{ id: string }>();
+  if (paid) return true;
+
+  const unverified = await database()
+    .prepare(
+      "SELECT * FROM note_orders WHERE buyer_hash=? AND note_id=? AND payment_id IS NOT NULL ORDER BY created_at DESC LIMIT 1"
+    )
+    .bind(buyer, noteId)
+    .first<Order>();
+
+  if (unverified && unverified.payment_id) {
+    try {
+      await verifyCaptured(await requireConfig(), unverified, unverified.payment_id);
+      await database()
+        .prepare("UPDATE note_orders SET status='paid' WHERE id=?")
+        .bind(unverified.id)
+        .run();
+      return true;
+    } catch (e) {
+      if (e instanceof PaymentError && e.status === 409) return false;
+      throw e;
+    }
+  }
+  return false;
+}
+
+export async function buyerHash(create = false) {
+  const user = await studentUser();
+  if (user) return studentBuyerHash(user.uid);
+  if (create) throw new PaymentError('Please sign in to your student account before buying notes.', 401);
+  return legacyBuyerHash();
+}
